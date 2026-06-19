@@ -67,3 +67,15 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+.vs/
+
+
+cmake-build-*/
+.idea/
+
+build/
+
+*.o
+*.obj
+*.exe
