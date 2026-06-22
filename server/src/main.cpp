@@ -1,42 +1,35 @@
-﻿#define WIN32_LEAN_AND_MEAN  // évite les conflits entre windows.h et winsock2.h
-#include <winsock2.h>        // API socket Windows
-#include <ws2tcpip.h>        // inet_pton, inet_ntop (InetPton sur certains MSVC)
-#include <windows.h>
+﻿#include "../../common.h"
 
 #include <iostream>
-#include <string>
 #include <vector>
 #include <thread>
 #include <mutex>
 #include <algorithm>
 
-// ANSI Colors
-const std::vector<std::string> COLORS =
-{
-    "\033[31m",  // Red
-    "\033[32m",  // Green
-    "\033[33m",  // Yellow
-    "\033[34m",  // Blue
-    "\033[35m",  // Magenta
-    "\033[36m",  // Cyan
-    "\033[91m",  // Light red
-    "\033[92m",  // Light green
-    "\033[93m",  // Light yellow
-    "\033[94m",  // Light blue
-};
-const std::string RESET = "\033[0m";
+// ============================================================
+// Server configuration
+// ============================================================
+std::string SERVER_NAME = "My Server Chat";
 
-struct Client
+// ============================================================
+// Client Struct : Client connected in TCP
+// ============================================================
+struct Client 
 {
-    SOCKET fd; // Socket Description
-    std::string pseudo; // Client Pseudo
-    std::string color; // ANSI color linked
+    SOCKET      fd;       // socket TCP for this client
+    std::string pseudo;   // pseudo chose at the connection
+    std::string color;    // color ANSI linked
+    COLORREF    colorref; // same color in COLORREF Win32
 };
 
+std::vector<Client> clients;
+std::mutex          clients_mutex;
+std::atomic<int>    client_count(0); // Clients currently connected
+int                 color_index = 0; // Next color index
 
-std::vector<Client> clients; // liste des sockets clients connectés
-std::mutex          clients_mutex; // mutex to access clients vector array
-int next_color_index = 0; // Next Color to link
+// ============================================================
+// Network tools
+// ============================================================
 
 // Send message to one socket
 void send_to(SOCKET fd, const std::string& msg)
@@ -73,43 +66,120 @@ bool recv_line(SOCKET fd, std::string& out)
 {
     out.clear();
     char c;
-    while (true) {
+    while (true) 
+    {
         int n = recv(fd, &c, 1, 0);
-        if (n <= 0) return false;  // 0 = deconnexion, <0 = erreur
+        if (n <= 0) return false;  // 0 = deconnexion, <0 = error
         if (c == '\n') break;
-        if (c != '\r') out += c;   // ignorer \r (Windows envoie \r\n)
+        if (c != '\r') out += c;   // ignored \r (Windows send \r\n)
     }
     return true;
 }
 
-// Fonction exécutée dans un thread par client
+// ============================================================
+// Thread managing Beacon UDP
+// 
+// - create a UDP socket
+// - active SO_BROADCAST on the socket
+// - Send to 255.255.255.255:UDP_PORT
+// ============================================================
+void udp_beacon_thread() 
+{
+    // create a UDP socket (SOCK_DGRAM = without connection, datagrammes)
+    SOCKET udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (udp_sock == INVALID_SOCKET) 
+    {
+        std::cerr << "[UDP] socket() failed : " << WSAGetLastError() << std::endl;
+        return;
+    }
+
+    // activate the broadcast on this socket
+    // without this option, sendto() to 255.255.255.255 return an error
+    int broadcast_opt = 1;
+    setsockopt(udp_sock, SOL_SOCKET, SO_BROADCAST,
+        reinterpret_cast<const char*>(&broadcast_opt), sizeof(broadcast_opt));
+
+    // Destination address : broadcast local network, port UDP_PORT
+    sockaddr_in broadcast_addr{};
+    broadcast_addr.sin_family = AF_INET;
+    broadcast_addr.sin_port = htons(UDP_PORT);
+    broadcast_addr.sin_addr.s_addr = INADDR_BROADCAST; // = 255.255.255.255
+
+    std::cout << "[UDP] Beacon started (port " << UDP_PORT << ")" << std::endl;
+
+    while (true) 
+    {
+        // load the beacon pack
+        UdpBeacon beacon{};
+        // strncpy_s : securate version of strncpy (MSVC)
+        // copy MAX_SERVER_NAME-1 characters + '\0' final
+        strncpy_s(beacon.server_name, SERVER_NAME.c_str(), MAX_SERVER_NAME - 1);
+        beacon.client_count = client_count.load(); // atomic read
+
+        // send the beacon in broadcast
+        // sendto() = send() for UDP (No connexion needed)
+        // we precise the destination address at each send
+        sendto(udp_sock,
+            reinterpret_cast<const char*>(&beacon),     // raw data
+            sizeof(beacon),                             // size stable
+            0,
+            reinterpret_cast<sockaddr*>(&broadcast_addr),
+            sizeof(broadcast_addr));
+
+        // Wait the next beacon
+        Sleep(UDP_BEACON_MS); // Sleep() = Win32 function (equal to sleep())
+    }
+
+    closesocket(udp_sock);
+}
+
+// ============================================================
+// Thread for each TCP Client
+// ============================================================
 void handle_client(SOCKET client_fd) 
 {
     // Ask pseudo
-    send_to(client_fd, "Entrez votre pseudo : ");
+    send_to(client_fd, "PSEUDO_REQUEST\n");
+    // Send tag "PSEUDO_REQUEST" for the client to detect that it is a special message
+
     std::string pseudo;
     if (!recv_line(client_fd, pseudo) || pseudo.empty()) 
     {
         closesocket(client_fd);
         return;
     }
-    //if(pseudo.size() > 20) pseudo = pseudo.substr(0, 20); // limiter a 20 caracteres
+
+    if (pseudo.size() > MAX_PSEUDO) 
+        pseudo = pseudo.substr(0, MAX_PSEUDO); // limit the pseudo's length
     
     // Link a color
     std::string color;
+    COLORREF    colorref; 
     {
         std::lock_guard<std::mutex> lock(clients_mutex);
-        color = COLORS[next_color_index % COLORS.size()];
-        next_color_index++;
-        clients.push_back({ client_fd, pseudo, color });
+        int idx = color_index % ANSI_COLOR_COUNT;
+        color = ANSI_COLORS[idx];
+        colorref = WIN32_COLORS[idx];
+        color_index++;
+        clients.push_back({ client_fd, pseudo, color, colorref });
     }
+    client_count.fetch_add(1); // Add one to the count
+
+    // Send Color to the client as RGB text
+    int r = GetRValue(colorref);
+    int g = GetGValue(colorref);
+    int b = GetBValue(colorref);
+    std::string color_msg = "COLOR " + std::to_string(r) + " " +
+        std::to_string(g) + " " +
+        std::to_string(b) + "\n";
+    send_to(client_fd, color_msg);
 
     // Display connexion on Server console
-    std::cout << color << "[+] " << pseudo << " a rejoint le chat" << RESET << std::endl;
+    std::cout << color << "[+] " << pseudo << " a rejoint le chat" << ANSI_RESET << std::endl;
 
     // Welcoming message
-    send_to(client_fd, color + "Bienvenue " + pseudo + " !" + RESET + "\n");
-    std::string join_msg = color + "*** " + pseudo + " a rejoint le chat ***" + RESET + "\n";
+    send_to(client_fd, color + "Bienvenue " + pseudo + " !" + ANSI_RESET + "\n");
+    std::string join_msg = color + "*** " + pseudo + " a rejoint le chat ***" + ANSI_RESET + "\n";
     broadcast(join_msg, client_fd);
 
     // Chat loop
@@ -121,10 +191,10 @@ void handle_client(SOCKET client_fd)
         if (msg.empty()) 
             continue;
 
-        // Formater : [pseudo en couleur] message en blanc
-        std::string formatted = color + "[" + pseudo + "] " + RESET + msg + "\n";
+        // Formater : [pseudo in color] message in white
+        std::string formatted = color + "[" + pseudo + "] " + ANSI_RESET + msg + "\n";
 
-        std::cout << color << "[" << pseudo << "] " << RESET << msg << std::endl;
+        std::cout << color << "[" << pseudo << "] " << ANSI_RESET << msg << std::endl;
         broadcast(formatted, client_fd);
     }
 
@@ -138,13 +208,15 @@ void handle_client(SOCKET client_fd)
         );
     }
 
-    std::string leave_msg = color + "*** " + pseudo + " a quitte le chat ***" + RESET + "\n";
+    std::string leave_msg = color + "*** " + pseudo + " left the chat ***" + ANSI_RESET + "\n";
     broadcast_all(leave_msg);
-    std::cout << color << "[-] " << pseudo << " a quitte le chat" << RESET << std::endl;
+    std::cout << color << "[-] " << pseudo << " left the chat" << ANSI_RESET << std::endl;
 
     closesocket(client_fd);
 }
-
+// ============================================================
+// Main
+// ============================================================
 auto initializeWinLibrary()
 {
     WSADATA data;
@@ -159,15 +231,18 @@ auto initializeWinLibrary()
 
 auto createSocket()
 {
-    // AF_INET      : famille d'adresses IPv4 (AF_INET6 pour IPv6)
-    // SOCK_STREAM  : socket TCP (flux d'octets fiable, ordonné)
+    // AF_INET      : IPv4 (AF_INET6 pour IPv6)
+    // SOCK_STREAM  : socket TCP (flux d'octets fiable, stable)
     //                SOCK_DGRAM = UDP (datagrammes, sans connexion)
     return socket(AF_INET /*IPV4*/, SOCK_STREAM /*TCP*/, IPPROTO_TCP /*IPPROTO_TCP = protocole TCP explicite*/);
 }
 
-int main() 
+int main(int argc, char* argv[])
 {
-    int port = 8080;
+    // Optionnal: Pass the server name as argument
+    // example: server.exe "Bap's server"
+    if (argc >= 2) 
+        SERVER_NAME = argv[1];
 
     // enable ANSI Color in windows console
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -180,11 +255,11 @@ int main()
         return 1;
     }
 
-    // Création du socket serveur
+    // Server socket creation
     SOCKET listenSocket = createSocket();
     if (listenSocket == INVALID_SOCKET) 
     {
-        std::cerr << "socket() échoué : " << WSAGetLastError() << std::endl;
+        std::cerr << "socket() failed : " << WSAGetLastError() << std::endl;
         WSACleanup();
         return 1;
     }
@@ -193,57 +268,63 @@ int main()
     setsockopt(listenSocket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
         reinterpret_cast<const char*>(&opt), sizeof(opt));
 
-    // Configuration de l'adresse
+    // adress configuration
     sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);   // htons : host to network short
-    addr.sin_addr.s_addr = INADDR_ANY;    // écouter sur toutes les interfaces
+    addr.sin_family = AF_INET;          // IPV4
+    addr.sin_port = htons(TCP_PORT);    // htons : host to network short
+    addr.sin_addr.s_addr = INADDR_ANY;  // listen on each IP : 255.255.255.255
 
-    // bind() : attache le socket à l'adresse IP:port
+    // bind() : attach the socket to the address IP:port
     if (bind(listenSocket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) 
     {
-        std::cerr << "bind() échoué : " << WSAGetLastError() << std::endl;
+        std::cerr << "bind() failed : " << WSAGetLastError() << std::endl;
         closesocket(listenSocket);
         WSACleanup();
         return 1;
     }
 
-    // listen() : passe en mode écoute passive
-    // 10 = backlog (taille de la file d'attente des connexions entrantes)
+    // listen() : pass in passive listen mode
+    // 10 = backlog (size of the connection waiting queue)
     if (listen(listenSocket, 10) == SOCKET_ERROR) 
     {
-        std::cerr << "listen() échoué : " << WSAGetLastError() << std::endl;
+        std::cerr << "listen() failed : " << WSAGetLastError() << std::endl;
         closesocket(listenSocket);
         WSACleanup();
         return 1;
     }
 
-    std::cout << "Serveur en écoute sur le port " << port << "..." << std::endl;
+    // Launch UDP Thread beacon in background
+    std::thread(udp_beacon_thread).detach();
 
-    // Boucle principale : accepter les clients indéfiniment
+    std::cout << "=== Server \"" << SERVER_NAME << "\" ===" << std::endl;
+    std::cout << "TCP listen on port " << TCP_PORT << std::endl;
+    std::cout << "UDP beacon on port    " << UDP_PORT << std::endl;
+    std::cout << "(launch client.exe to connect)" << std::endl;
+
+    // Principal loop : Accept clients
     while (true) 
     {
         sockaddr_in client_addr{};
-        int         client_len = sizeof(client_addr); // int sous Windows (pas socklen_t)
+        int         client_len = sizeof(client_addr);
 
-        // accept() : bloque jusqu'à ce qu'un client se connecte
-        // Retourne un nouveau SOCKET dédié à ce client
+        // accept() : block the thread until someone connect
+        // Return a new SOCKET for this client
         SOCKET client_fd = accept(listenSocket,
             reinterpret_cast<sockaddr*>(&client_addr),
             &client_len);
 
         if (client_fd == INVALID_SOCKET) 
         {
-            std::cerr << "accept() échoué : " << WSAGetLastError() << std::endl;
+            std::cerr << "accept() failed : " << WSAGetLastError() << std::endl;
             continue;
         }
 
-        // Afficher l'IP du client
+        // Display client IP
         char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
-        std::cout << "Nouveau client depuis : " << client_ip << std::endl;
+        std::cout << "New client from : " << client_ip << std::endl;
 
-        // Chaque client est géré dans son propre thread
+        // Each client is managed in its own thread
         std::thread(handle_client, client_fd).detach();
     }
 
