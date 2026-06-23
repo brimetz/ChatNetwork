@@ -5,6 +5,8 @@
 #include <thread>
 #include <mutex>
 #include <algorithm>
+#include <string>
+#include <atomic>
 
 // ============================================================
 // Server configuration

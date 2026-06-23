@@ -21,8 +21,14 @@ constexpr int MAX_SERVER_NAME	= 32;		// longueur max du nom du serveur
 
 // ============================================================
 // Paquet UDP Beacon
+// struct send in broadcast by a server each 2 seconds
+// Client will receive it and use it to get server information 
+// and display the server in the server available list
+// 
+// Need a fix size struct so no std::string
+// each member has a known size at compilation
 // ============================================================
-#pragma pack(push, 1) // disable padding
+#pragma pack(push, 1) // disable padding, without that, compilator can insert some octets to align members
 struct UdpBeacon
 {
 	char server_name[MAX_SERVER_NAME];
@@ -33,7 +39,8 @@ struct UdpBeacon
 // ============================================================
 // ANSI Colors
 // ============================================================
-const std::string ANSI_COLORS[] = {
+const std::string ANSI_COLORS[] = 
+{
     "\033[31m",  // Rouge
     "\033[32m",  // Vert
     "\033[33m",  // Jaune
