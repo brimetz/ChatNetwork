@@ -141,7 +141,7 @@ void udp_beacon_thread()
 void handle_client(SOCKET client_fd) 
 {
     // Ask pseudo
-    send_to(client_fd, "PSEUDO_REQUEST\n");
+    //send_to(client_fd, "PSEUDO_REQUEST\n");
     // Send tag "PSEUDO_REQUEST" for the client to detect that it is a special message
 
     std::string pseudo;
@@ -180,8 +180,8 @@ void handle_client(SOCKET client_fd)
     std::cout << color << "[+] " << pseudo << " a rejoint le chat" << ANSI_RESET << std::endl;
 
     // Welcoming message
-    send_to(client_fd, color + "Bienvenue " + pseudo + " !" + ANSI_RESET + "\n");
-    std::string join_msg = color + "*** " + pseudo + " a rejoint le chat ***" + ANSI_RESET + "\n";
+    send_to(client_fd, "MSG Server " + color + " Bienvenue " + pseudo + " !" + ANSI_RESET + "\n");
+    std::string join_msg = "MSG Server" + color + "*** " + pseudo + " a rejoint le chat ***" + ANSI_RESET + "\n";
     broadcast(join_msg, client_fd);
 
     // Chat loop
@@ -194,7 +194,7 @@ void handle_client(SOCKET client_fd)
             continue;
 
         // Formater : [pseudo in color] message in white
-        std::string formatted = color + "[" + pseudo + "] " + ANSI_RESET + msg + "\n";
+        std::string formatted = "MSG " + color + "[" + pseudo + "] " + ANSI_RESET + msg + "\n";
 
         std::cout << color << "[" << pseudo << "] " << ANSI_RESET << msg << std::endl;
         broadcast(formatted, client_fd);
@@ -208,6 +208,7 @@ void handle_client(SOCKET client_fd)
                 [client_fd](const Client& c) { return c.fd == client_fd; }),
             clients.end()
         );
+        client_count.fetch_add(-1);
     }
 
     std::string leave_msg = color + "*** " + pseudo + " left the chat ***" + ANSI_RESET + "\n";
