@@ -1,5 +1,4 @@
-﻿#include "../../common/common_shared.h"
-#include "../../common/common_win32.h"
+﻿#include "../../common.h"
 
 #include <iostream>
 #include <string>

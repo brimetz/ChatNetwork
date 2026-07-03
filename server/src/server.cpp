@@ -1,5 +1,4 @@
-﻿#include "../../common/common_shared.h"
-#include "../../common/common_win32.h"
+﻿#include "../../common/common.h"
 
 #include <iostream>
 #include <vector>
@@ -72,18 +71,9 @@ bool recv_line(SOCKET fd, std::string& out)
     while (true) 
     {
         int n = recv(fd, &c, 1, 0);
-        if (n <= 0)
-        {
-            return false;  // 0 = deconnexion, <0 = error
-        }
-        else if (c == '\n')
-        {
-            break;
-        }
-        else if (c != '\r')
-        {
-            out += c;   // ignored \r (Windows send \r\n)
-        }
+        if (n <= 0) return false;  // 0 = deconnexion, <0 = error
+        if (c == '\n') break;
+        if (c != '\r') out += c;   // ignored \r (Windows send \r\n)
     }
     return true;
 }
@@ -148,53 +138,6 @@ void udp_beacon_thread()
 // ============================================================
 // Thread for each TCP Client
 // ============================================================
-void SendWelcomingMessage(SOCKET newclient_fd, const std::string& pseudo, const std::string& color)
-{
-    // Display connexion on Server console
-    std::cout << color << "[+] " << pseudo << " a rejoint le chat" << ANSI_RESET << std::endl;
-
-    // Welcoming message
-    send_to(newclient_fd, std::string(TAG_MSG) + " Server Welcome " /* + color */ + pseudo + " !"/* + ANSI_RESET */ + "\n");
-    std::string join_msg = std::string(TAG_MSG) + " Server " /* + color + "*** " */ + pseudo + " join the chat ***" /* + ANSI_RESET*/ + "\n";
-    broadcast(join_msg, newclient_fd);
-}
-
-void BroadcastNewClientColor(const std::string& pseudo, COLORREF colorref)
-{
-    // Send new client Color to all clients as RGB text
-    int r = GetRValue(colorref);
-    int g = GetGValue(colorref);
-    int b = GetBValue(colorref);
-    std::string color_msg = std::string(TAG_COLOR) + " " + pseudo + " " + std::to_string(r) + " " +
-        std::to_string(g) + " " +
-        std::to_string(b) + "\n";
-    broadcast_all(color_msg);
-}
-
-void SendAllClientsColorToNewClient(SOCKET newclient_fd)
-{
-    // And send all previous clients color to the new client
-    for (int i = 0; i < clients.size() - 1; i++)
-    {
-        // Send new client Color to all clients as RGB text
-        int r = GetRValue(clients[i].colorref);
-        int g = GetGValue(clients[i].colorref);
-        int b = GetBValue(clients[i].colorref);
-        std::string color_msg = std::string(TAG_COLOR) + " " + clients[i].pseudo + " " + std::to_string(r) + " " +
-            std::to_string(g) + " " +
-            std::to_string(b) + "\n";
-        send_to(newclient_fd, color_msg);
-    }
-}
-
-void SendDeconnectionMessage(SOCKET clientleaving_fd, const std::string& pseudo, const std::string& color)
-{
-    broadcast_all(std::string(TAG_DECONNECTION) + " " + pseudo + "\n");
-    std::string leave_msg = std::string(TAG_MSG) + " Server" + " *** " + pseudo + " left the chat ***" + "\n";
-    broadcast_all(leave_msg);
-    std::cout << color << "[-] " << pseudo << " left the chat" << ANSI_RESET << std::endl;
-}
-
 void handle_client(SOCKET client_fd) 
 {
     // Ask pseudo
@@ -208,10 +151,8 @@ void handle_client(SOCKET client_fd)
         return;
     }
 
-    if (pseudo.size() > MAX_PSEUDO)
-    {
+    if (pseudo.size() > MAX_PSEUDO) 
         pseudo = pseudo.substr(0, MAX_PSEUDO); // limit the pseudo's length
-    }
     
     // Link a color
     std::string color;
@@ -226,11 +167,22 @@ void handle_client(SOCKET client_fd)
     }
     client_count.fetch_add(1); // Add one to the count
 
-    BroadcastNewClientColor(pseudo, colorref);
+    // Send Color to the client as RGB text
+    int r = GetRValue(colorref);
+    int g = GetGValue(colorref);
+    int b = GetBValue(colorref);
+    std::string color_msg = "COLOR " + std::to_string(r) + " " +
+        std::to_string(g) + " " +
+        std::to_string(b) + "\n";
+    send_to(client_fd, color_msg);
 
-    SendAllClientsColorToNewClient(client_fd);
+    // Display connexion on Server console
+    std::cout << color << "[+] " << pseudo << " a rejoint le chat" << ANSI_RESET << std::endl;
 
-    SendWelcomingMessage(client_fd, pseudo, color);
+    // Welcoming message
+    send_to(client_fd, "MSG Server " + color + " Bienvenue " + pseudo + " !" + ANSI_RESET + "\n");
+    std::string join_msg = "MSG Server" + color + "*** " + pseudo + " a rejoint le chat ***" + ANSI_RESET + "\n";
+    broadcast(join_msg, client_fd);
 
     // Chat loop
     while (true) 
@@ -242,13 +194,13 @@ void handle_client(SOCKET client_fd)
             continue;
 
         // Formater : [pseudo in color] message in white
-        std::string formatted = std::string(TAG_MSG) + " " /* + color */ + pseudo /* + ANSI_RESET */+ " " + msg + "\n";
+        std::string formatted = "MSG " + color + "[" + pseudo + "] " + ANSI_RESET + msg + "\n";
 
-        std::cout << color << "[" << pseudo << "] "  << ANSI_RESET << msg << std::endl;
+        std::cout << color << "[" << pseudo << "] " << ANSI_RESET << msg << std::endl;
         broadcast(formatted, client_fd);
     }
 
-    // Deconnection
+    // Deconnexion
     {
         std::lock_guard<std::mutex> lock(clients_mutex);
         clients.erase(
@@ -259,11 +211,12 @@ void handle_client(SOCKET client_fd)
         client_count.fetch_add(-1);
     }
 
-    SendDeconnectionMessage(client_fd, pseudo, color);
+    std::string leave_msg = color + "*** " + pseudo + " left the chat ***" + ANSI_RESET + "\n";
+    broadcast_all(leave_msg);
+    std::cout << color << "[-] " << pseudo << " left the chat" << ANSI_RESET << std::endl;
 
     closesocket(client_fd);
 }
-
 // ============================================================
 // Main
 // ============================================================
