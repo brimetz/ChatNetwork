@@ -202,12 +202,6 @@ ChatClientQt.exe
 | `8080` | TCP | Chat messages |
 | `9001` | UDP | Server discovery (broadcast) |
 
-If a firewall blocks the connection, allow inbound traffic on these ports:
-```cmd
-netsh advfirewall firewall add rule name="ChatApp TCP" dir=in action=allow protocol=TCP localport=8080
-netsh advfirewall firewall add rule name="ChatApp UDP" dir=in action=allow protocol=UDP localport=9001
-```
-
 ---
 
 ## Key Concepts Learned
