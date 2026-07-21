@@ -10,7 +10,7 @@
 #include <QMessageBox>
 #include <QListWidgetItem>
 
-#include "common/common_shared.h"
+#include "common_shared.h"
 
 // ============================================================
 // CONSTRUCTOR

@@ -5,7 +5,7 @@
 #include <QHostAddress>
 #include <QNetworkDatagram>
 
-#include "common/common_shared.h"
+#include "common_shared.h"
 
 // ============================================================
 // CONSTRUCTOR
