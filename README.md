@@ -1,4 +1,4 @@
-# ChatApp — C++ / Qt 6 Chat Application
+# ChatNetwork — C++ / Qt 6 Chat Application
 
 A local network chat application built from scratch in C++, featuring a **console server** and a **Qt 6 GUI client** with automatic server discovery.
 
@@ -6,21 +6,20 @@ A local network chat application built from scratch in C++, featuring a **consol
 
 ## Overview
 
-This project was built step by step to learn socket programming, Win32 GUI, and Qt 6.  
-It covers UDP broadcasting, TCP communication, multi-threading, and cross-framework architecture.
-
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    Local Network                     │
 │                                                      │
 │   ┌──────────────┐   UDP Beacon    ┌──────────────┐ │
 │   │              │ ─────────────►  │              │ │
-│   │   server.exe │                 │  Qt Client   │ │
-│   │   (C++ / Win32)  TCP Chat  ◄── │  (Qt 6)      │ │
-│   │              │ ◄────────────►  │              │ │
+│   │   server     │                 │  Qt Client   │ │
+│   │   (C++/Win32)│  ◄── TCP ────►  │  (Qt 6)      │ │
+│   │              │                 │              │ │
 │   └──────────────┘                 └──────────────┘ │
 └─────────────────────────────────────────────────────┘
 ```
+
+The server broadcasts its presence every 2 seconds over UDP. The Qt client listens, displays available servers, and connects via TCP to chat.
 
 ---
 
@@ -38,47 +37,56 @@ It covers UDP broadcasting, TCP communication, multi-threading, and cross-framew
 ## Project Structure
 
 ```
-ChatApp/
+ChatNetwork/
 │
-├── common/                       # Shared between server and client
-│   ├── common_shared.h           # UdpBeacon struct, ports, protocol tags (no dependencies)
-│   ├── common_win32.h            # Win32/Winsock colors and ANSI codes (server only)
-│   └── common_qt.h               # QColor palette (Qt client only)
+├── README.md
+├── .gitignore
 │
-├── server/                       # Console server (C++ / Winsock2)
-│   └── server.cpp
+├── common/                         # Shared headers (no external dependencies)
+│   ├── common_shared.h             # UdpBeacon struct, ports, protocol tags
+│   ├── common_win32.h              # COLORREF, Winsock colors (server only)
+│   └── common_qt.h                 # QColor palette (Qt client only)
 │
-└── client_qt/                    # Qt 6 GUI client
-    ├── main.cpp
-    ├── NetworkManager.h/.cpp     # QUdpSocket + QTcpSocket, emits Qt signals
-    ├── ServerListWindow.h/.cpp   # Server discovery list (QListWidget)
-    ├── ChatWindow.h/.cpp         # Chat UI (QTextBrowser + QLineEdit)
-    └── ChatClientQt.pro          # qmake project file
+├── server/                         # Console server — Visual Studio project
+│   ├── ChatServer.sln
+│   ├── ChatServer/
+│   │   ├── ChatServer.vcxproj
+│   │   └── ChatServer.vcxproj.filters
+│   └── src/
+│       └── server.cpp
+│
+└── client/
+    ├── qt/                         # Qt 6 GUI client — Qt Creator project
+    │   ├── ChatClientQt.pro
+    │   └── src/
+    │       ├── main.cpp
+    │       ├── NetworkManager.h/.cpp
+    │       ├── ServerListWindow.h/.cpp
+    │       └── ChatWindow.h/.cpp
+    └── win32/                      # Legacy Win32 client (reference only)
+        ├── client.sln
+        └── ChatClient/
+            └── src/
+                └── main.cpp
 ```
 
 ---
 
 ## Architecture
 
-### Server (`server.cpp`)
+### Server (`server/src/server.cpp`)
 
-The server is a pure C++ console application using **Winsock2**.
+Pure C++ console application using **Winsock2**.
 
 | Thread | Role |
 |--------|------|
 | Main thread | `accept()` loop — waits for incoming TCP connections |
-| UDP beacon thread | Broadcasts a `UdpBeacon` packet every 2 seconds |
-| Per-client thread | One thread per connected client — handles `recv_line()` / `broadcast()` |
+| UDP beacon thread | Broadcasts a `UdpBeacon` packet every 2 seconds on port 9001 |
+| Per-client thread | One thread per connected client — handles recv/broadcast |
 
-**Message protocol** — every line exchanged over TCP follows this format:
-```
-COLOR R G B          ← server assigns a color to the new client
-MSG pseudo text      ← chat message from a client
-```
+### Qt Client (`client/qt/`)
 
-### Client (`client_qt/`)
-
-The Qt client is fully **event-driven** — no manual threads needed.
+Fully **event-driven** — no manual threads needed.
 
 | Class | Role |
 |-------|------|
@@ -86,93 +94,62 @@ The Qt client is fully **event-driven** — no manual threads needed.
 | `ServerListWindow` | Listens to `serverDiscovered` / `serverUpdated` / `serverLost` signals. |
 | `ChatWindow` | Listens to `messageReceived` / `colorAssigned` / `connected` signals. |
 
-`QUdpSocket` and `QTcpSocket` are asynchronous — they emit `readyRead()` when data is available, without blocking the UI thread.
+### Message Protocol
 
-### UDP Discovery Flow
-
+Every line exchanged over TCP follows this format:
 ```
-server.exe                          client Qt
-    │                                   │
-    │── UdpBeacon broadcast ──────────► │  onUdpDataReceived()
-    │   (every 2 seconds)               │      └─ emit serverDiscovered()
-    │                                   │          └─ ServerListWindow adds row
-    │                                   │
-    │   (no beacon for 6 seconds)       │  onCleanupTimer()
-    │                                   │      └─ emit serverLost()
-    │                                   │          └─ ServerListWindow removes row
+COLOR R G B          ← server assigns a RGB color to the new client
+MSG pseudo text      ← chat message (pseudo = sender's username)
 ```
 
-### TCP Chat Flow
+### Network Ports
 
-```
-client Qt                           server.exe
-    │                                   │
-    │── connect() ──────────────────►   │  accept() → new thread
-    │◄─ COLOR R G B ─────────────────   │  send color
-    │── pseudo\n ────────────────────►  │  recv_line() → store pseudo
-    │◄─ MSG Server Welcome! ──────────  │  send welcome
-    │                                   │
-    │── Hello\n ─────────────────────►  │  broadcast("MSG pseudo Hello")
-    │◄─ MSG Alice Hello ──────────────  │  (to all other clients)
-```
+| Port | Protocol | Usage |
+|------|----------|-------|
+| `8080` | TCP | Chat messages |
+| `9001` | UDP | Server discovery (broadcast) |
 
 ---
 
-## Getting Started
+## Prerequisites
 
-### Prerequisites
-
-| Tool | Version |
-|------|---------|
-| Visual Studio | 2019 or 2022 (with "Desktop development with C++") |
-| Qt | 6.x |
-| Qt Creator | 10+ (optional, recommended for the client) |
+| Tool | Version | Used for |
+|------|---------|----------|
+| Visual Studio | 2019 or 2022 | Server compilation |
+| "Desktop development with C++" workload | — | Required by Visual Studio |
+| Qt | 6.x | Client compilation |
+| Qt Creator | 10+ | Client IDE (recommended) |
 
 ---
 
-### Build — Server
+## Build & Run
 
-Open the **Developer Command Prompt for Visual Studio**, then:
+### Server
+
+**Option A — Visual Studio (recommended for debugging)**
+
+1. Open `server/ChatServer.sln` in Visual Studio
+2. Set configuration to **Debug** or **Release**, platform **x64**
+3. Press **Ctrl+Shift+B** to build
+4. Press **F5** to run with debugger, or **Ctrl+F5** without
+
+The executable is output to:
+```
+server/x64/Debug/ChatServer.exe
+```
+
+**Option B — Developer Command Prompt**
+
+Open the *Developer Command Prompt for Visual Studio*, then:
 
 ```cmd
-cd server
-cl server.cpp /EHsc /std:c++17 /Feserver.exe /I..\common /link ws2_32.lib
+cd server\src
+cl server.cpp /EHsc /std:c++17 /FeChatServer.exe /I..\..\common /link ws2_32.lib
 ```
 
-Or open the `.sln` in Visual Studio and configure:
-
-| Property | Value |
-|----------|-------|
-| Additional Dependencies | `ws2_32.lib` |
-| Additional Include Directories | path to `common/` |
-| Subsystem | `/SUBSYSTEM:CONSOLE` |
-| C++ Standard | `/std:c++17` |
-
----
-
-### Build — Qt Client
-
-Open `client_qt/ChatClientQt.pro` in **Qt Creator**, select a kit (MinGW or MSVC), then press **Ctrl+R**.
-
-Or from the command line:
-
+**Run with a custom server name:**
 ```cmd
-cd client_qt
-qmake ChatClientQt.pro
-mingw32-make        # MinGW
-:: or
-nmake               # MSVC
-```
-
----
-
-### Run
-
-**Terminal 1 — Start the server:**
-```cmd
-server.exe
-:: or with a custom name:
-server.exe "Bob's Server"
+ChatServer.exe "Bob's Server"
 ```
 
 Expected output:
@@ -183,43 +160,122 @@ UDP beacon on port    9001
 [UDP] Beacon started (port 9001)
 ```
 
-**Launch the Qt client:**
-```cmd
-ChatClientQt.exe
+---
+
+### Qt Client
+
+**Option A — Qt Creator (recommended)**
+
+1. Open `client/qt/ChatClientQt.pro` in Qt Creator
+2. Select a kit (MinGW 64-bit or MSVC)
+3. Press **Ctrl+R** to build and run
+
+The executable is output to:
+```
+client/qt/build/Desktop_Qt_6_x_x_MinGW_64bit_Debug/debug/ChatClientQt.exe
 ```
 
-1. The server appears in the list within ~2 seconds
-2. Double-click or click **Join**
-3. Enter your username
-4. Chat window opens — start messaging
+**Option B — Command line (MinGW)**
+
+```cmd
+cd client\qt
+qmake ChatClientQt.pro
+mingw32-make
+```
+
+**Option B — Command line (MSVC)**
+
+```cmd
+cd client\qt
+qmake ChatClientQt.pro
+nmake
+```
 
 ---
 
-## Network Ports
+### Running the Application
 
-| Port | Protocol | Usage |
-|------|----------|-------|
-| `8080` | TCP | Chat messages |
-| `9001` | UDP | Server discovery (broadcast) |
+1. **Start the server first** (in any terminal):
+```cmd
+server\x64\Debug\ChatServer.exe
+```
+
+2. **Launch one or more Qt clients:**
+```cmd
+client\qt\build\...\ChatClientQt.exe
+```
+
+3. In the client window:
+   - Wait ~2 seconds — the server appears in the list automatically
+   - Double-click the server or click **Join**
+   - Enter a username
+   - Start chatting
 
 ---
 
-## Key Concepts Learned
+## Firewall
+
+If the connection is blocked by Windows Firewall, run these commands as administrator:
+
+```cmd
+netsh advfirewall firewall add rule name="ChatNetwork TCP" dir=in action=allow protocol=TCP localport=8080
+netsh advfirewall firewall add rule name="ChatNetwork UDP" dir=in action=allow protocol=UDP localport=9001
+```
+
+---
+
+## Visual Studio Project Configuration (server)
+
+If you recreate the Visual Studio project from scratch, apply these settings:
+
+> Right-click project → **Properties** → set *Configuration* to **All Configurations**
+
+| Category | Property | Value |
+|----------|----------|-------|
+| General | C++ Standard | `/std:c++17` |
+| C/C++ → General | Additional Include Directories | `..\..\common` |
+| Linker → Input | Additional Dependencies | `ws2_32.lib` |
+| Linker → System | Subsystem | `Console (/SUBSYSTEM:CONSOLE)` |
+
+---
+
+## Qt Creator Project Configuration (client)
+
+Everything is configured in `client/qt/ChatClientQt.pro`:
+
+```pro
+QT += core gui widgets network
+CONFIG += c++17
+INCLUDEPATH += ../../common
+
+SOURCES += \
+    src/main.cpp \
+    src/NetworkManager.cpp \
+    src/ServerListWindow.cpp \
+    src/ChatWindow.cpp
+
+HEADERS += \
+    src/NetworkManager.h \
+    src/ServerListWindow.h \
+    src/ChatWindow.h \
+    ../../common/common_shared.h \
+    ../../common/common_qt.h
+```
+
+After editing the `.pro`, click **"Yes"** on the reload banner in Qt Creator, or right-click the project → **Run qmake**.
+
+---
+
+## Key Concepts
 
 | Concept | Where |
 |---------|-------|
-| Winsock2 socket lifecycle (`socket` → `bind` → `listen` → `accept`) | `server.cpp` |
+| Winsock2 socket lifecycle (`socket` → `bind` → `listen` → `accept`) | `server/src/server.cpp` |
 | UDP broadcast for service discovery | `udp_beacon_thread()` / `NetworkManager` |
-| TCP framing — reading line by line | `recv_line()` / `m_tcpBuffer` |
-| Multi-threading with `std::thread` and `std::mutex` | `server.cpp` |
-| Win32 GUI (`WNDCLASS`, `WndProc`, message loop) | Win32 client (legacy) |
+| TCP framing — accumulating data until `\n` | `recv_line()` / `m_tcpBuffer` |
+| Multi-threading with `std::thread` and `std::mutex` | `server/src/server.cpp` |
+| Win32 GUI (`WNDCLASS`, `WndProc`, message loop) | `client/win32/` (legacy) |
 | Qt signals/slots — event-driven networking without threads | `NetworkManager` |
 | Qt layouts (`QVBoxLayout`, `QHBoxLayout`) | `ServerListWindow`, `ChatWindow` |
 | HTML rendering in `QTextBrowser` | `ChatWindow::appendMessage()` |
 | Cross-platform header separation | `common/` |
-
-
-## WIP: DEV Last console command
-
-cl client/src/main.cpp /EHsc /std:c++17 /Feclient.exe /link ws2_32.lib user32.lib gdi32.lib comctl32.lib
-cl server/src/main.cpp /EHsc /std:c++17 /Feserver.exe /link ws2_32.lib user32.lib gdi32.lib comctl32.lib
